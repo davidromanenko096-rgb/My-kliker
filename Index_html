@@ -679,3 +679,278 @@ function renderDiamondShop() {
 
 // ================================================================
 //  БРЕНДЫ (4 филиала)
+// ================================================================
+const BRAND_DATA = {
+    nike: { name: 'Nike', icon: '👟', baseCost: 500, baseIncome: 5 },
+    adidas: { name: 'Adidas', icon: '👕', baseCost: 800, baseIncome: 8 },
+    puma: { name: 'Puma', icon: '🐆', baseCost: 1200, baseIncome: 12 },
+    reebok: { name: 'Reebok', icon: '⚡', baseCost: 1800, baseIncome: 18 }
+};
+
+function getBrandCost(brandKey) {
+    const data = BRAND_DATA[brandKey];
+    const level = game.brands[brandKey].level || 0;
+    return Math.floor(data.baseCost * Math.pow(1.5, level));
+}
+
+function getBrandIncome(brandKey) {
+    const data = BRAND_DATA[brandKey];
+    const level = game.brands[brandKey].level || 0;
+    return Math.floor(data.baseIncome * (1 + level * 0.3));
+}
+
+function getTotalBrandIncome() {
+    let total = 0;
+    for (let b in game.brands) {
+        total += getBrandIncome(b);
+    }
+    return total;
+}
+
+function buyBrand(brandKey) {
+    const cost = getBrandCost(brandKey);
+    if (game.coins >= cost) {
+        game.coins -= cost;
+        game.brands[brandKey].level = (game.brands[brandKey].level || 0) + 1;
+        updateUI();
+        playClickSound();
+    }
+}
+
+function renderBrands() {
+    const container = document.getElementById('brandGrid');
+    container.innerHTML = '';
+    for (let key in BRAND_DATA) {
+        const data = BRAND_DATA[key];
+        const level = game.brands[key].level || 0;
+        const cost = getBrandCost(key);
+        const income = getBrandIncome(key);
+        const canBuy = game.coins >= cost;
+        const div = document.createElement('div');
+        div.className = 'brand-card' + (canBuy ? '' : ' disabled');
+        div.innerHTML = `
+            <div class="icon">${data.icon}</div>
+            <div class="name">${data.name}</div>
+            <div class="level">Уровень ${level}</div>
+            <div class="income">💰 ${formatNumber(income)}/сек</div>
+            <div class="price">🪙 ${formatNumber(cost)}</div>
+        `;
+        if (canBuy) div.addEventListener('click', () => buyBrand(key));
+        container.appendChild(div);
+    }
+}
+
+// ================================================================
+//  СУНДУК
+// ================================================================
+function openChest() {
+    if (game.diamonds < 5) {
+        document.getElementById('chestResult').textContent = '❌ Недостаточно алмазов!';
+        return;
+    }
+    game.diamonds -= 5;
+    const rand = Math.random();
+    let prize = 0;
+    if (rand < 0.60) prize = Math.floor(1000 + Math.random() * 1000);
+    else if (rand < 0.85) prize = Math.floor(2000 + Math.random() * 2000);
+    else if (rand < 0.95) prize = Math.floor(4000 + Math.random() * 3000);
+    else if (rand < 0.99) prize = Math.floor(7000 + Math.random() * 2000);
+    else prize = Math.floor(9000 + Math.random() * 1000);
+    prize = Math.floor(prize);
+    game.coins += prize;
+    game.chestOpened = (game.chestOpened || 0) + 1;
+    document.getElementById('chestResult').textContent = '🎉 Вы выиграли ' + formatNumber(prize) + ' монет!';
+    updateUI();
+    playClickSound();
+}
+
+// ================================================================
+//  ЛИДЕРЫ (из общей базы)
+// ================================================================
+function getLeaderboard() {
+    const users = loadUsers();
+    const list = [];
+    for (let nick in users) {
+        if (users[nick].game) {
+            list.push({ nickname: nick, coins: users[nick].game.coins || 0 });
+        }
+    }
+    list.sort((a,b) => b.coins - a.coins);
+    return list.slice(0, 50);
+}
+
+function renderLeaderboard() {
+    const container = document.getElementById('leaderList');
+    const list = getLeaderboard();
+    container.innerHTML = '';
+    if (list.length === 0) {
+        container.innerHTML = '<p style="text-align:center;color:#7a8a9e;font-size:13px;">Пока никого нет</p>';
+        return;
+    }
+    list.forEach((entry, idx) => {
+        const div = document.createElement('div');
+        div.className = 'leader-item';
+        const isMe = entry.nickname === currentUser;
+        if (isMe) div.style.borderLeftColor = '#4fc3f7';
+        div.innerHTML = `
+            <span class="rank">#${idx+1}</span>
+            <span class="name">${entry.nickname} ${isMe ? '⭐' : ''}</span>
+            <span class="score">${formatNumber(entry.coins)}</span>
+        `;
+        container.appendChild(div);
+    });
+}
+
+// ================================================================
+//  АДМИН-ПАНЕЛЬ
+// ================================================================
+let adminUnlocked = false;
+
+function setupAdmin() {
+    document.getElementById('adminUnlockBtn').addEventListener('click', function() {
+        const code = document.getElementById('adminCodeInput').value;
+        if (code === '0000') {
+            adminUnlocked = true;
+            document.getElementById('adminPanel').classList.add('show');
+            document.getElementById('adminCodeInput').value = '';
+            alert('Доступ получен');
+            updateUI();
+        } else {
+            alert('Неверный код');
+        }
+    });
+    // Кнопки админа
+    document.getElementById('adminSetCoins').addEventListener('click', function() {
+        if (!adminUnlocked) return;
+        const val = parseFloat(document.getElementById('adminCoins').value);
+        if (isNaN(val) || val < 0) return;
+        game.coins = Math.floor(val);
+        updateUI();
+    });
+    document.getElementById('adminAddCoinsBtn').addEventListener('click', function() {
+        if (!adminUnlocked) return;
+        const val = parseFloat(document.getElementById('adminCoins').value);
+        if (isNaN(val) || val < 0) return;
+        game.coins += Math.floor(val);
+        updateUI();
+    });
+    document.getElementById('adminSubCoinsBtn').addEventListener('click', function() {
+        if (!adminUnlocked) return;
+        const val = parseFloat(document.getElementById('adminCoins').value);
+        if (isNaN(val) || val < 0) return;
+        game.coins = Math.max(0, game.coins - Math.floor(val));
+        updateUI();
+    });
+    document.getElementById('adminSetDiamonds').addEventListener('click', function() {
+        if (!adminUnlocked) return;
+        const val = parseFloat(document.getElementById('adminDiamonds').value);
+        if (isNaN(val) || val < 0) return;
+        game.diamonds = Math.floor(val);
+        updateUI();
+    });
+    document.getElementById('adminAddDiamondsBtn').addEventListener('click', function() {
+        if (!adminUnlocked) return;
+        const val = parseFloat(document.getElementById('adminDiamonds').value);
+        if (isNaN(val) || val < 0) return;
+        game.diamonds += Math.floor(val);
+        updateUI();
+    });
+    document.getElementById('adminSubDiamondsBtn').addEventListener('click', function() {
+        if (!adminUnlocked) return;
+        const val = parseFloat(document.getElementById('adminDiamonds').value);
+        if (isNaN(val) || val < 0) return;
+        game.diamonds = Math.max(0, game.diamonds - Math.floor(val));
+        updateUI();
+    });
+    document.querySelectorAll('.admin-grid .btn-small[data-target]').forEach(btn => {
+        btn.addEventListener('click', function() {
+            if (!adminUnlocked) return;
+            const target = this.dataset.target;
+            const input = document.getElementById('admin' + target.charAt(0).toUpperCase() + target.slice(1));
+            let val = parseFloat(input.value);
+            if (isNaN(val)) return;
+            if (target === 'clickPower') {
+                val = Math.max(1, Math.floor(val));
+                game.clickPower = val;
+            } else if (target === 'maxEnergy') {
+                val = Math.max(10, Math.floor(val));
+                game.maxEnergy = val;
+                if (game.energy > game.maxEnergy) game.energy = game.maxEnergy;
+            }
+            updateUI();
+        });
+    });
+    document.getElementById('adminResetBtn').addEventListener('click', function() {
+        if (!adminUnlocked) return;
+        if (confirm('Сбросить свой прогресс?')) {
+            const def = getDefaultGame();
+            for (let key in def) game[key] = def[key];
+            game.brands = def.brands;
+            updateUI();
+            alert('Сброшено');
+        }
+    });
+}
+
+// ================================================================
+//  ВЫХОД
+// ================================================================
+function logout() {
+    if (confirm('Выйти из аккаунта?')) {
+        // Останавливаем все интервалы
+        if (window._autoInterval) clearInterval(window._autoInterval);
+        if (window._energyInterval) clearInterval(window._energyInterval);
+        if (window._passiveInterval) clearInterval(window._passiveInterval);
+        if (window._diamondInterval) clearInterval(window._diamondInterval);
+        window._autoInterval = null;
+        window._energyInterval = null;
+        window._passiveInterval = null;
+        window._diamondInterval = null;
+        currentUser = null;
+        game = null;
+        appEl.style.display = 'none';
+        authScreen.style.display = 'flex';
+        authNick.value = '';
+        authPass.value = '';
+        authError.textContent = '';
+        isLoginMode = true;
+        updateAuthMode();
+    }
+}
+
+// ================================================================
+//  ПРОВЕРКА АВТОВХОДА (если пользователь уже залогинен)
+// ================================================================
+(function autoLogin() {
+    // Пытаемся найти последнего залогиненного пользователя по сохранённому нику
+    const savedNick = localStorage.getItem('lastUser');
+    if (savedNick) {
+        const users = loadUsers();
+        if (users[savedNick]) {
+            currentUser = savedNick;
+            game = users[savedNick].game;
+            if (game) {
+                authScreen.style.display = 'none';
+                appEl.style.display = 'block';
+                document.getElementById('headerNick').textContent = currentUser;
+                document.getElementById('settingsNick').textContent = currentUser;
+                initGame();
+                return;
+            }
+        }
+    }
+    // Если не залогинен – показываем экран входа
+    authScreen.style.display = 'flex';
+    appEl.style.display = 'none';
+    // Сохраняем последнего пользователя после входа
+    const origEnter = enterGame;
+    enterGame = function() {
+        origEnter();
+        localStorage.setItem('lastUser', currentUser);
+    };
+})();
+
+console.log('CryptoClicker с регистрацией и брендами загружен!');
+</script>
+</body>
+</html>
