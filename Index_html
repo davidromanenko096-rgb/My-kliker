@@ -225,3 +225,457 @@ let game = null;
 
 // ================================================================
 //  ЭКРАН ВХОДА / РЕГИСТРАЦИИ
+// ================================================================
+const authScreen = document.getElementById('authScreen');
+const appEl = document.getElementById('app');
+const authError = document.getElementById('authError');
+const authNick = document.getElementById('authNick');
+const authPass = document.getElementById('authPass');
+const authLoginBtn = document.getElementById('authLoginBtn');
+const authRegisterBtn = document.getElementById('authRegisterBtn');
+const authSwitchLink = document.getElementById('authSwitchLink');
+const authSwitchText = document.getElementById('authSwitch');
+
+let isLoginMode = true; // true = вход, false = регистрация
+
+function updateAuthMode() {
+    if (isLoginMode) {
+        authLoginBtn.style.display = 'block';
+        authRegisterBtn.style.display = 'none';
+        authSwitchText.innerHTML = 'Нет аккаунта? <span id="authSwitchLink">Зарегистрироваться</span>';
+        document.querySelector('#authSwitchLink').addEventListener('click', () => {
+            isLoginMode = false;
+            updateAuthMode();
+        });
+    } else {
+        authLoginBtn.style.display = 'none';
+        authRegisterBtn.style.display = 'block';
+        authSwitchText.innerHTML = 'Уже есть аккаунт? <span id="authSwitchLink">Войти</span>';
+        document.querySelector('#authSwitchLink').addEventListener('click', () => {
+            isLoginMode = true;
+            updateAuthMode();
+        });
+    }
+}
+updateAuthMode();
+
+// Вход
+authLoginBtn.addEventListener('click', () => {
+    const nick = authNick.value.trim();
+    const pass = authPass.value.trim();
+    if (!nick || !pass) { authError.textContent = 'Заполните все поля'; return; }
+    const users = loadUsers();
+    if (!users[nick]) { authError.textContent = 'Пользователь не найден'; return; }
+    if (users[nick].password !== pass) { authError.textContent = 'Неверный пароль'; return; }
+    authError.textContent = '';
+    // Вход выполнен
+    currentUser = nick;
+    game = users[nick].game;
+    // Если у пользователя нет игры – создаём новую
+    if (!game) {
+        game = getDefaultGame();
+        users[nick].game = game;
+        saveUsers(users);
+    }
+    enterGame();
+});
+
+// Регистрация
+authRegisterBtn.addEventListener('click', () => {
+    const nick = authNick.value.trim();
+    const pass = authPass.value.trim();
+    if (!nick || !pass) { authError.textContent = 'Заполните все поля'; return; }
+    if (nick.length < 3) { authError.textContent = 'Ник минимум 3 символа'; return; }
+    if (pass.length < 4) { authError.textContent = 'Пароль минимум 4 символа'; return; }
+    const users = loadUsers();
+    if (users[nick]) { authError.textContent = 'Этот ник уже занят'; return; }
+    authError.textContent = '';
+    // Создаём пользователя
+    const newGame = getDefaultGame();
+    users[nick] = { password: pass, game: newGame };
+    saveUsers(users);
+    currentUser = nick;
+    game = newGame;
+    enterGame();
+});
+
+// Функция входа в игру
+function enterGame() {
+    authScreen.style.display = 'none';
+    appEl.style.display = 'block';
+    document.getElementById('headerNick').textContent = currentUser;
+    document.getElementById('settingsNick').textContent = currentUser;
+    // Инициализируем игру
+    initGame();
+}
+
+// ================================================================
+//  ДЕФОЛТНОЕ СОСТОЯНИЕ ИГРЫ (все нули!)
+// ================================================================
+function getDefaultGame() {
+    return {
+        coins: 0,
+        clickPower: 1,
+        energy: 100,
+        maxEnergy: 100,
+        diamonds: 0,
+        totalClicks: 0,
+        autoLevel: 0,
+        // Бренды: 4 штуки с разными параметрами
+        brands: {
+            nike: { level: 0, income: 0 },
+            adidas: { level: 0, income: 0 },
+            puma: { level: 0, income: 0 },
+            reebok: { level: 0, income: 0 }
+        },
+        // Улучшения регенерации
+        regenLevel: 0,
+        // Таймер для алмазов (время последнего получения)
+        lastDiamondTime: Date.now(),
+        // Счётчик открытых сундуков
+        chestOpened: 0
+    };
+}
+
+// ================================================================
+//  ИНИЦИАЛИЗАЦИЯ ИГРЫ
+// ================================================================
+function initGame() {
+    // Если игра загружена из базы, она уже в game
+    // Но проверим, что все поля есть
+    const def = getDefaultGame();
+    for (let key in def) {
+        if (!(key in game)) game[key] = def[key];
+    }
+    if (!game.brands) game.brands = def.brands;
+    for (let b in def.brands) {
+        if (!game.brands[b]) game.brands[b] = { level: 0, income: 0 };
+    }
+    saveGame();
+    updateUI();
+    // Запустить автокликер, если есть уровень
+    if (game.autoLevel > 0 && !window._autoInterval) {
+        window._autoInterval = setInterval(() => {
+            if (game.autoLevel > 0) {
+                const power = getAutoPower();
+                game.coins += power;
+                saveGame();
+                updateUI();
+            }
+        }, 3000);
+    }
+    // Запустить регенерацию энергии
+    if (!window._energyInterval) {
+        window._energyInterval = setInterval(() => {
+            const regen = getRegenPerSecond() / 10;
+            if (game.energy < game.maxEnergy) {
+                game.energy = Math.min(game.maxEnergy, game.energy + regen);
+                saveGame();
+                updateUI();
+            }
+        }, 100);
+    }
+    // Пассивный доход от брендов (каждую секунду)
+    if (!window._passiveInterval) {
+        window._passiveInterval = setInterval(() => {
+            let income = getTotalBrandIncome();
+            if (income > 0) {
+                game.coins += income;
+                saveGame();
+                updateUI();
+            }
+        }, 1000);
+    }
+    // Пассивные алмазы (раз в 10 минут)
+    if (!window._diamondInterval) {
+        window._diamondInterval = setInterval(() => {
+            // Проверяем, прошло ли 10 минут с последнего получения
+            const now = Date.now();
+            const diff = now - (game.lastDiamondTime || now);
+            if (diff >= 600000) { // 10 минут
+                game.diamonds += 1;
+                game.lastDiamondTime = now;
+                saveGame();
+                updateUI();
+                spawnFloatText('💎 +1', { clientX: window.innerWidth-50, clientY: 50 });
+            }
+        }, 10000); // проверяем каждые 10 секунд
+    }
+    // Обработчик клика
+    document.getElementById('clickCoin').addEventListener('click', function(e) {
+        clickCoin(e);
+    });
+    // Навигация
+    document.querySelectorAll('.nav-item').forEach(item => {
+        item.addEventListener('click', function() {
+            document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+            this.classList.add('active');
+            const tabId = this.dataset.tab;
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.getElementById(tabId).classList.add('active');
+        });
+    });
+    // Админ
+    setupAdmin();
+    // Выход
+    document.getElementById('logoutBtn').addEventListener('click', logout);
+    // Сундук
+    document.getElementById('openChestBtn').addEventListener('click', openChest);
+}
+
+// ================================================================
+//  СОХРАНЕНИЕ ИГРЫ (в базу пользователей)
+// ================================================================
+function saveGame() {
+    if (!currentUser) return;
+    const users = loadUsers();
+    if (users[currentUser]) {
+        users[currentUser].game = game;
+        saveUsers(users);
+    }
+}
+
+// ================================================================
+//  ОБНОВЛЕНИЕ UI
+// ================================================================
+function updateUI() {
+    if (!game) return;
+    const coinsStr = formatNumber(game.coins);
+    const diaStr = formatNumber(game.diamonds);
+    document.getElementById('headerCoins').textContent = coinsStr;
+    document.getElementById('headerDiamonds').textContent = diaStr;
+    document.getElementById('mainCoins').textContent = coinsStr;
+    document.getElementById('mainDiamonds').textContent = diaStr;
+    const pct = (game.energy / game.maxEnergy) * 100;
+    document.getElementById('energyFill').style.width = pct + '%';
+    document.getElementById('energyLabel').textContent = Math.floor(game.energy) + ' / ' + game.maxEnergy;
+    document.getElementById('statClicks').textContent = formatNumber(game.totalClicks);
+    document.getElementById('statClickPower').textContent = formatNumber(game.clickPower);
+    document.getElementById('statMaxEnergy').textContent = game.maxEnergy;
+    const passive = getTotalBrandIncome();
+    document.getElementById('statPassive').textContent = formatNumber(passive) + '/сек';
+    renderShop();
+    renderDiamondShop();
+    renderBrands();
+    renderLeaderboard();
+    // Админ поля
+    document.getElementById('adminCoins').value = game.coins;
+    document.getElementById('adminDiamonds').value = game.diamonds;
+    document.getElementById('adminClickPower').value = game.clickPower;
+    document.getElementById('adminMaxEnergy').value = game.maxEnergy;
+    document.getElementById('clickCoin').style.opacity = game.energy >= 1 ? '1' : '0.6';
+    saveGame();
+}
+
+function formatNumber(n) {
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return Math.floor(n).toString();
+}
+
+// ================================================================
+//  КЛИК
+// ================================================================
+function clickCoin(e) {
+    if (game.energy < 1) {
+        shakeElement(document.getElementById('clickCoin'));
+        return;
+    }
+    game.energy -= 1;
+    game.coins += game.clickPower;
+    game.totalClicks += 1;
+    if (Math.random() < 0.05) {
+        game.diamonds += 1;
+        spawnFloatText('💎 +1', e || {clientX: window.innerWidth/2, clientY: window.innerHeight/2-40});
+    }
+    spawnFloatText('+' + formatNumber(game.clickPower), e || {clientX: window.innerWidth/2, clientY: window.innerHeight/2-40});
+    playClickSound();
+    updateUI();
+}
+
+function shakeElement(el) {
+    el.style.animation = 'none';
+    void el.offsetHeight;
+    el.style.animation = 'shake 0.2s';
+    setTimeout(() => el.style.animation = '', 300);
+}
+
+function spawnFloatText(text, ev) {
+    const el = document.createElement('div');
+    el.className = 'float-text';
+    el.textContent = text;
+    const x = ev.clientX || window.innerWidth/2;
+    const y = ev.clientY || window.innerHeight/2 - 40;
+    el.style.left = (x - 30 + (Math.random()*40-20)) + 'px';
+    el.style.top = (y - 20) + 'px';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 700);
+}
+
+let audioCtx = null;
+function playClickSound() {
+    try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.frequency.value = 800 + Math.random()*200;
+        osc.type = 'sine';
+        gain.gain.setValueAtTime(0.12, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.07);
+        osc.start(audioCtx.currentTime);
+        osc.stop(audioCtx.currentTime + 0.07);
+    } catch(e) {}
+}
+
+// ================================================================
+//  МАГАЗИН (монеты) – сбалансированные цены
+// ================================================================
+function getClickPowerCost() {
+    const level = game.clickPower - 1;
+    return Math.floor(10 * Math.pow(1.5, level));
+}
+
+function buyPower() {
+    const cost = getClickPowerCost();
+    if (game.coins >= cost) {
+        game.coins -= cost;
+        game.clickPower += 1;
+        updateUI();
+        playClickSound();
+    }
+}
+
+function getMaxEnergyCost() {
+    const level = Math.floor((game.maxEnergy - 100) / 20);
+    return Math.floor(25 * Math.pow(1.5, level));
+}
+
+function buyMaxEnergy() {
+    const cost = getMaxEnergyCost();
+    if (game.coins >= cost) {
+        game.coins -= cost;
+        game.maxEnergy += 20;
+        // НЕ восстанавливаем энергию автоматически!
+        updateUI();
+        playClickSound();
+    }
+}
+
+function getRegenCost() {
+    return Math.floor(30 * Math.pow(1.5, game.regenLevel || 0));
+}
+
+function getRegenPerSecond() {
+    return 0.5 + (game.regenLevel || 0) * 0.1;
+}
+
+function buyRegen() {
+    const cost = getRegenCost();
+    if (game.coins >= cost) {
+        game.coins -= cost;
+        game.regenLevel = (game.regenLevel || 0) + 1;
+        updateUI();
+        playClickSound();
+    }
+}
+
+function renderShop() {
+    const container = document.getElementById('shopGrid');
+    container.innerHTML = '';
+    // Сила клика
+    const p1 = document.createElement('div');
+    const cost1 = getClickPowerCost();
+    p1.className = 'shop-card' + (game.coins >= cost1 ? '' : ' disabled');
+    p1.innerHTML = `
+        <div class="icon"><i class="fas fa-hand-fist"></i></div>
+        <div class="name">Сила клика</div>
+        <div class="desc">+1 к доходу</div>
+        <div class="price"><i class="fas fa-coins"></i> ${formatNumber(cost1)}</div>
+        <div class="level">Уровень ${game.clickPower-1}</div>
+    `;
+    if (game.coins >= cost1) p1.addEventListener('click', buyPower);
+    container.appendChild(p1);
+    // Энергия
+    const p2 = document.createElement('div');
+    const cost2 = getMaxEnergyCost();
+    p2.className = 'shop-card' + (game.coins >= cost2 ? '' : ' disabled');
+    p2.innerHTML = `
+        <div class="icon"><i class="fas fa-battery-full"></i></div>
+        <div class="name">Запас энергии</div>
+        <div class="desc">+20 к макс.</div>
+        <div class="price"><i class="fas fa-coins"></i> ${formatNumber(cost2)}</div>
+        <div class="level">Текущий: ${game.maxEnergy}</div>
+    `;
+    if (game.coins >= cost2) p2.addEventListener('click', buyMaxEnergy);
+    container.appendChild(p2);
+    // Регенерация
+    const p3 = document.createElement('div');
+    const cost3 = getRegenCost();
+    p3.className = 'shop-card' + (game.coins >= cost3 ? '' : ' disabled');
+    p3.innerHTML = `
+        <div class="icon"><i class="fas fa-bolt"></i></div>
+        <div class="name">Регенерация</div>
+        <div class="desc">+0.1/сек</div>
+        <div class="price"><i class="fas fa-coins"></i> ${formatNumber(cost3)}</div>
+        <div class="level">Уровень ${game.regenLevel || 0}</div>
+    `;
+    if (game.coins >= cost3) p3.addEventListener('click', buyRegen);
+    container.appendChild(p3);
+}
+
+// ================================================================
+//  АЛМАЗНЫЙ МАГАЗИН (мощный клик)
+// ================================================================
+function getAutoLevel() { return game.autoLevel || 0; }
+function getAutoCost() {
+    const level = getAutoLevel();
+    if (level === 0) return 5;
+    return 5 * Math.pow(2, level);
+}
+function getAutoPower() {
+    const level = getAutoLevel();
+    return (level + 1) * 10;
+}
+function buyAuto() {
+    const cost = getAutoCost();
+    if (game.diamonds >= cost && game.autoLevel < 10) {
+        game.diamonds -= cost;
+        game.autoLevel = (game.autoLevel || 0) + 1;
+        if (!window._autoInterval) {
+            window._autoInterval = setInterval(() => {
+                if (game.autoLevel > 0) {
+                    const power = getAutoPower();
+                    game.coins += power;
+                    updateUI();
+                }
+            }, 3000);
+        }
+        updateUI();
+        playClickSound();
+    }
+}
+
+function renderDiamondShop() {
+    const container = document.getElementById('diamondShop');
+    container.innerHTML = '';
+    const level = getAutoLevel();
+    const cost = getAutoCost();
+    const canBuy = game.diamonds >= cost && level < 10;
+    const p = document.createElement('div');
+    p.className = 'shop-card' + (canBuy ? '' : ' disabled');
+    p.innerHTML = `
+        <div class="icon"><i class="fas fa-robot"></i></div>
+        <div class="name">Мощный клик</div>
+        <div class="desc">+1 к силе клика (навсегда)</div>
+        <div class="price"><i class="fas fa-gem"></i> ${cost}</div>
+        <div class="level">Уровень ${level}/10</div>
+    `;
+    if (canBuy) p.addEventListener('click', buyAuto);
+    container.appendChild(p);
+}
+
+// ================================================================
+//  БРЕНДЫ (4 филиала)
